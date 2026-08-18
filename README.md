@@ -15,7 +15,7 @@
 1. Put the correct SQL Server connection string in `src/SalesData.Api/appsettings.json` (or use the `ConnectionStrings__DefaultConnection` environment variable).
 2. Run `dotnet restore`.
 3. Run `dotnet ef database update --project src/SalesData.Api` after creating migrations for a new database.
-4. Run `dotnet run --project src/SalesData.Api`; the API listens on `http://localhost:5080` in the included development profile.
+4. Run `dotnet run --project src/SalesData.Api`; the API listens on `http://localhost:5080` and Swagger opens at `http://localhost:5080/swagger`.
 
 ## Customer APIs
 
@@ -48,3 +48,5 @@ For corporate/non-individual customers, email or company duplication is rejected
 Sales imports prefetch matching data once and classify all Excel rows in memory, avoiding the original multiple-database-queries-per-row bottleneck. Dates use half-open ranges so SQL Server can use the configured indexes.
 
 The supplied prospect schema has `EVENT_NAME` but no `EVENT_DATE` column, so event uploads persist the event name only, matching the provided entity model.
+
+Local Angular development origins `http://localhost:4200` and `http://127.0.0.1:4200` are allowed through the configured CORS policy. Add deployed frontend origins under `Cors:AllowedOrigins` in configuration.

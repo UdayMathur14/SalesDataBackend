@@ -15,20 +15,30 @@ public sealed class CustomerService(AppDbContext db) : ICustomerService
     {
         page = Math.Max(page, 1);
         pageSize = Math.Clamp(pageSize, 1, 200);
-        var query = db.Customers.AsNoTracking();
 
-        if (!string.IsNullOrWhiteSpace(search))
+        try
         {
-            var term = search.Trim();
-            query = query.Where(x => x.CompanyName.Contains(term) || x.CustomerEmail.Contains(term) || x.ContactPerson.Contains(term) || (x.CustomerCode != null && x.CustomerCode.Contains(term)));
-        }
-        if (!string.IsNullOrWhiteSpace(category)) query = query.Where(x => x.Category == category.Trim());
-        if (!string.IsNullOrWhiteSpace(country)) query = query.Where(x => x.Country == country.Trim());
+            var query = db.Customers.AsNoTracking();
 
-        var total = await query.CountAsync(ct);
-        var items = await query.OrderByDescending(x => x.CreatedOn).ThenByDescending(x => x.Id)
-            .Skip((page - 1) * pageSize).Take(pageSize).Select(x => ToResponse(x)).ToListAsync(ct);
-        return new PagedResult<CustomerResponse>(items, page, pageSize, total);
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var term = search.Trim();
+                query = query.Where(x => x.CompanyName.Contains(term) || x.CustomerEmail.Contains(term) || x.ContactPerson.Contains(term) || (x.CustomerCode != null && x.CustomerCode.Contains(term)));
+            }
+            if (!string.IsNullOrWhiteSpace(category)) query = query.Where(x => x.Category == category.Trim());
+            if (!string.IsNullOrWhiteSpace(country)) query = query.Where(x => x.Country == country.Trim());
+
+            var total = await query.CountAsync(ct);
+            var items = await query.OrderByDescending(x => x.CreatedOn).ThenByDescending(x => x.Id)
+                .Skip((page - 1) * pageSize).Take(pageSize).Select(x => ToResponse(x)).ToListAsync(ct);
+            return new PagedResult<CustomerResponse>(items, page, pageSize, total);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The browser canceled an obsolete request (for example, after a filter/page change).
+            // Handle it here so the cancellation does not escape user code in the debugger.
+            return new PagedResult<CustomerResponse>([], page, pageSize, 0);
+        }
     }
 
     public Task<CustomerResponse?> GetByIdAsync(int id, CancellationToken ct) =>

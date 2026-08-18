@@ -17,20 +17,30 @@ public sealed class SalesService(AppDbContext db) : ISalesService
     {
         var page = Math.Max(1, request.Page);
         var pageSize = Math.Clamp(request.PageSize, 1, 200);
-        var cleanQuery = ApplyFilters(db.CleanProspects.AsNoTracking(), request);
-        var blockedQuery = ApplyFilters(db.BlockedProspects.AsNoTracking(), request);
-        var cleanTotal = request.RecordType == SalesRecordType.Blocked ? 0 : await cleanQuery.CountAsync(ct);
-        var blockedTotal = request.RecordType == SalesRecordType.Clean ? 0 : await blockedQuery.CountAsync(ct);
 
-        var clean = request.RecordType == SalesRecordType.Blocked
-            ? []
-            : (await cleanQuery.OrderByDescending(x => x.CreatedOn).ThenByDescending(x => x.Id)
-                .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct)).Select(ToResponse).ToList();
-        var blocked = request.RecordType == SalesRecordType.Clean
-            ? []
-            : (await blockedQuery.OrderByDescending(x => x.CreatedOn).ThenByDescending(x => x.Id)
-                .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct)).Select(ToResponse).ToList();
-        return new SalesSearchResult(clean, blocked, cleanTotal, blockedTotal, page, pageSize);
+        try
+        {
+            var cleanQuery = ApplyFilters(db.CleanProspects.AsNoTracking(), request);
+            var blockedQuery = ApplyFilters(db.BlockedProspects.AsNoTracking(), request);
+            var cleanTotal = request.RecordType == SalesRecordType.Blocked ? 0 : await cleanQuery.CountAsync(ct);
+            var blockedTotal = request.RecordType == SalesRecordType.Clean ? 0 : await blockedQuery.CountAsync(ct);
+
+            var clean = request.RecordType == SalesRecordType.Blocked
+                ? []
+                : (await cleanQuery.OrderByDescending(x => x.CreatedOn).ThenByDescending(x => x.Id)
+                    .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct)).Select(ToResponse).ToList();
+            var blocked = request.RecordType == SalesRecordType.Clean
+                ? []
+                : (await blockedQuery.OrderByDescending(x => x.CreatedOn).ThenByDescending(x => x.Id)
+                    .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct)).Select(ToResponse).ToList();
+            return new SalesSearchResult(clean, blocked, cleanTotal, blockedTotal, page, pageSize);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The browser canceled an obsolete request (for example, after a filter/page change).
+            // Handle it here so the cancellation does not escape user code in the debugger.
+            return new SalesSearchResult([], [], 0, 0, page, pageSize);
+        }
     }
 
     public async Task<SalesLeadResponse?> GetAsync(SalesRecordType type, int id, CancellationToken ct)
@@ -138,9 +148,11 @@ public sealed class SalesService(AppDbContext db) : ISalesService
     {
         if (string.IsNullOrWhiteSpace(companyName)) throw new SalesValidationException("Company name cannot be empty.");
         var term = companyName.Trim();
-        var sales = await db.CleanProspects.AsNoTracking().Where(x => x.CompanyName != null && x.CompanyName.Contains(term)).Take(5)
+        var sales = await db.CleanProspects.AsNoTracking().Where(x => x.CompanyName != null && x.CompanyName.Contains(term))
+            .OrderByDescending(x => x.CreatedOn).ThenByDescending(x => x.Id).Take(5)
             .Select(x => new CompanyLocationResult(x.CompanyName!, "Sales / Lead Module", x.State ?? "Clean", x.CreatedBy)).ToListAsync(ct);
-        var customers = await db.Customers.AsNoTracking().Where(x => x.CompanyName.Contains(term)).Take(5)
+        var customers = await db.Customers.AsNoTracking().Where(x => x.CompanyName.Contains(term))
+            .OrderByDescending(x => x.CreatedOn).ThenByDescending(x => x.Id).Take(5)
             .Select(x => new CompanyLocationResult(x.CompanyName, "Customer Module", "Active Customer", null)).ToListAsync(ct);
         return sales.Concat(customers).ToList();
     }
@@ -343,12 +355,14 @@ public sealed class SalesService(AppDbContext db) : ISalesService
     private static void Validate(ParsedLead lead, SalesImportMode mode)
     {
         if (lead.CompanyName.Length == 0 || lead.Category.Length == 0) throw new SalesValidationException("Company name and category are required.");
+        if (mode == SalesImportMode.Standard) return;
+
         if (mode == SalesImportMode.Event && !ValidCategories.Contains(lead.Category)) throw new SalesValidationException("Invalid category.");
         if (mode == SalesImportMode.Event && lead.EventName is null) throw new SalesValidationException("Event name is required for event sales.");
         if (mode == SalesImportMode.Event && (lead.CountryCode is null || lead.Country is null)) throw new SalesValidationException("Country code and country are required.");
         if (lead.Email.Length == 0 && lead.Phone1 is null) throw new SalesValidationException("Email or contact number is required.");
         if (lead.Email.Length > 0 && !IsValidEmail(lead.Email)) throw new SalesValidationException("Invalid email.");
-        if (new[] { lead.Phone1, lead.Phone2, lead.Phone3 }.Any(x => x is not null && !x.All(char.IsDigit))) throw new SalesValidationException("Contact numbers can contain digits only.");
+        if (lead.Phone1 is not null && !lead.Phone1.All(char.IsDigit)) throw new SalesValidationException("Contact number can contain digits only.");
     }
 
     private static ParsedLead ParseRow(IXLWorksheet sheet, int row, string actor, string? eventName) => Normalize(new SalesLeadRequest(
@@ -364,12 +378,11 @@ public sealed class SalesService(AppDbContext db) : ISalesService
             Empty(x.State)?.ToUpperInvariant(), Empty(x.City)?.ToUpperInvariant(), x.Category.Trim().ToUpperInvariant(), x.Actor.Trim(), Empty(x.EventName));
     }
 
-    private static CleanProspect ToCleanEntity(ParsedLead x) { var now = DateTime.UtcNow; return new CleanProspect { CustomerCode = Code(), CompanyName = x.CompanyName, ContactPerson = x.ContactPerson, CustomerContactNumber1 = x.Phone1, CustomerContactNumber2 = x.Phone2, CustomerContactNumber3 = x.Phone3, CustomerEmail = x.Email, EmailDomain = Empty(x.Domain), CountryCode = x.CountryCode, Country = x.Country, State = x.State, City = x.City, Category = x.Category, SalesPersonId = 1, CreatedBy = x.Actor, CreatedOn = now, ModifiedBy = x.Actor, ModifiedOn = now, EventName = x.EventName }; }
-    private static BlockedProspect ToBlockedEntity(ParsedLead x, string? blockedBy, string reason) => new() { CustomerCode = Code(), CompanyName = x.CompanyName, ContactPerson = x.ContactPerson, CustomerContactNumber1 = x.Phone1, CustomerContactNumber2 = x.Phone2, CustomerContactNumber3 = x.Phone3, CustomerEmail = x.Email, EmailDomain = Empty(x.Domain), CountryCode = x.CountryCode, Country = x.Country, State = x.State, City = x.City, Category = x.Category, CreatedBy = x.Actor, CreatedOn = DateTime.UtcNow, BlockedBy = blockedBy, BlockReason = reason, EventName = x.EventName };
+    private static CleanProspect ToCleanEntity(ParsedLead x) { var now = DateTime.UtcNow; return new CleanProspect { CompanyName = x.CompanyName, ContactPerson = x.ContactPerson, CustomerContactNumber1 = x.Phone1, CustomerContactNumber2 = x.Phone2, CustomerContactNumber3 = x.Phone3, CustomerEmail = x.Email, EmailDomain = Empty(x.Domain), CountryCode = x.CountryCode, Country = x.Country, State = x.State, City = x.City, Category = x.Category, SalesPersonId = 1, CreatedBy = x.Actor, CreatedOn = now, ModifiedBy = x.Actor, ModifiedOn = now, EventName = x.EventName }; }
+    private static BlockedProspect ToBlockedEntity(ParsedLead x, string? blockedBy, string reason) => new() { CompanyName = x.CompanyName, ContactPerson = x.ContactPerson, CustomerContactNumber1 = x.Phone1, CustomerContactNumber2 = x.Phone2, CustomerContactNumber3 = x.Phone3, CustomerEmail = x.Email, EmailDomain = Empty(x.Domain), CountryCode = x.CountryCode, Country = x.Country, State = x.State, City = x.City, Category = x.Category, CreatedBy = x.Actor, CreatedOn = DateTime.UtcNow, BlockedBy = blockedBy, BlockReason = reason, EventName = x.EventName };
     private static SalesLeadResponse ToResponse(CleanProspect x) => new(x.Id, SalesRecordType.Clean, x.CustomerCode, x.CompanyName, x.ContactPerson, x.CustomerContactNumber1, x.CustomerContactNumber2, x.CustomerContactNumber3, x.CustomerEmail, x.EmailDomain, x.CountryCode, x.Country, x.State, x.City, x.Category, x.CreatedBy, x.CreatedOn, x.SalesPersonId, null, null, null, null, null, x.EventName);
     private static SalesLeadResponse ToResponse(BlockedProspect x) => new(x.Id, SalesRecordType.Blocked, x.CustomerCode, x.CompanyName, x.ContactPerson, x.CustomerContactNumber1, x.CustomerContactNumber2, x.CustomerContactNumber3, x.CustomerEmail, x.EmailDomain, x.CountryCode, x.Country, x.State, x.City, x.Category, x.CreatedBy, x.CreatedOn, null, x.BlockedBy, x.BlockReason, x.Released, x.ReleasedBy, x.ReleasedOn, x.EventName);
     private static ImportError ToError(int row, ParsedLead x, string message) => new(row, x.CompanyName, x.Email, x.Phone1, message);
-    private static string Code() => $"LEAD-{Guid.NewGuid():N}"[..18].ToUpperInvariant();
     private static string? Empty(string? x) => string.IsNullOrWhiteSpace(x) ? null : x.Trim();
     private static string DomainOf(string? email, string? stored) => email?.Contains('@') == true ? email[(email.LastIndexOf('@') + 1)..].ToLowerInvariant() : !string.IsNullOrWhiteSpace(stored) && stored != "-" ? stored.Trim().ToLowerInvariant() : "";
     private static bool Eq(string? a, string? b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
