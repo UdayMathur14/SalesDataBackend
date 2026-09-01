@@ -5,7 +5,7 @@ using SalesData.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
-    ?? ["http://localhost:4200", "http://127.0.0.1:4200"];
+    ?? ["http://localhost:4200", "http://192.168.29.101:8001/api"];
 
 // Avoid the Windows Event Log provider: a normal development user may not have
 // permission to write to it, and a logging failure must never terminate an API response.
