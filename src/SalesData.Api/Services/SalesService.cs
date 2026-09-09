@@ -11,7 +11,10 @@ namespace SalesData.Api.Services;
 public sealed class SalesService(AppDbContext db) : ISalesService
 {
     private static readonly HashSet<string> ValidCategories = new(StringComparer.OrdinalIgnoreCase)
-        { "CORPORATE", "LAWFIRM", "LAW FIRM", "UNIVERSITY", "PCT", "INDIVIDUAL" };
+        { "CORPORATE", "LAWFIRM", "LAW FIRM", "UNIVERSITY", "PCT", "INDIVIDUAL", "MSME" };
+
+    private const string CategoryNotFoundMessage =
+        "Category does not exist. Allowed categories: CORPORATE, LAWFIRM, LAW FIRM, UNIVERSITY, PCT, INDIVIDUAL, MSME.";
 
     public async Task<SalesSearchResult> SearchAsync(SalesSearchRequest request, CancellationToken ct)
     {
@@ -115,12 +118,8 @@ public sealed class SalesService(AppDbContext db) : ISalesService
         var lastRow = sheet.LastRowUsed()?.RowNumber() ?? 0;
         if (lastRow < 2) throw new SalesValidationException("Excel file has no data rows.");
 
-        var commonDomains = await LoadCommonDomainsAsync(ct);
-        var customers = await LoadCustomerSnapshotAsync(ct);
-        var existingClean = await LoadCleanSnapshotAsync(ct);
-        var cleanEntities = new List<CleanProspect>();
-        var blockedEntities = new List<BlockedProspect>();
         var errors = new List<ImportError>();
+        var validRows = new List<(int ExcelRow, ParsedLead Lead)>();
         var eventEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         for (var row = 2; row <= lastRow; row++)
@@ -131,6 +130,20 @@ public sealed class SalesService(AppDbContext db) : ISalesService
             if (mode == SalesImportMode.Event && parsed.Email.Length > 0 && !eventEmails.Add(parsed.Email))
             { errors.Add(ToError(row, parsed, "Duplicate email in Excel file.")); continue; }
 
+            validRows.Add((row, parsed));
+        }
+
+        if (validRows.Count == 0)
+            return new SalesImportResult(0, 0, errors.Count, [], [], errors);
+
+        var commonDomains = await LoadCommonDomainsAsync(ct);
+        var customers = await LoadCustomerSnapshotAsync(ct);
+        var existingClean = await LoadCleanSnapshotAsync(ct);
+        var cleanEntities = new List<CleanProspect>();
+        var blockedEntities = new List<BlockedProspect>();
+
+        foreach (var (row, parsed) in validRows)
+        {
             var classified = Classify(parsed, mode, commonDomains, customers, existingClean);
             if (classified.InvalidReason is not null) { errors.Add(ToError(row, parsed, classified.InvalidReason)); continue; }
             if (classified.BlockReason is null) cleanEntities.Add(ToCleanEntity(parsed));
@@ -224,29 +237,55 @@ public sealed class SalesService(AppDbContext db) : ISalesService
         var clean = workbook.Worksheets.Add("Clean Customers");
         var blocked = workbook.Worksheets.Add("Blocked Customers");
         var invalid = workbook.Worksheets.Add("Invalid Customers");
-        WriteHeaders(clean, ["Customer Code", "Company Name", "Email", "Contact Number", "Created By", "Event"]);
-        WriteHeaders(blocked, ["Customer Code", "Company Name", "Email", "Contact Number", "Blocked By", "Blocked Reason", "Created By", "Event"]);
+
+        string[] cleanHeaders = ["Customer Code", "Company Name", "Contact Person", "Email", "Contact Number 1", "Contact Number 2", "Contact Number 3", "Country Code", "Country", "State", "City", "Category", "Created By", "Created On", "Event"];
+        string[] blockedHeaders = ["Customer Code", "Company Name", "Contact Person", "Email", "Contact Number 1", "Contact Number 2", "Contact Number 3", "Country Code", "Country", "State", "City", "Category", "Blocked By", "Blocked Reason", "Created By", "Blocked On", "Released", "Released By", "Released On", "Event"];
+
+        WriteHeaders(clean, cleanHeaders);
+        WriteHeaders(blocked, blockedHeaders);
         WriteHeaders(invalid, ["Excel Row", "Company Name", "Email", "Contact Number", "Error Message"]);
+
         for (var i = 0; i < result.CleanRecords.Count; i++)
         {
             var x = result.CleanRecords[i]; var row = i + 2;
-            clean.Cell(row, 1).Value = x.CustomerCode; clean.Cell(row, 2).Value = x.CompanyName; clean.Cell(row, 3).Value = x.CustomerEmail;
-            clean.Cell(row, 4).Value = x.CustomerContactNumber1; clean.Cell(row, 5).Value = x.CreatedBy; clean.Cell(row, 6).Value = x.EventName;
+            clean.Cell(row, 1).Value = x.CustomerCode; clean.Cell(row, 2).Value = x.CompanyName; clean.Cell(row, 3).Value = x.ContactPerson;
+            clean.Cell(row, 4).Value = x.CustomerEmail; clean.Cell(row, 5).Value = x.CustomerContactNumber1; clean.Cell(row, 6).Value = x.CustomerContactNumber2;
+            clean.Cell(row, 7).Value = x.CustomerContactNumber3; clean.Cell(row, 8).Value = x.CountryCode; clean.Cell(row, 9).Value = x.Country;
+            clean.Cell(row, 10).Value = x.State; clean.Cell(row, 11).Value = x.City; clean.Cell(row, 12).Value = x.Category;
+            clean.Cell(row, 13).Value = x.CreatedBy; clean.Cell(row, 14).Value = x.CreatedOn; clean.Cell(row, 15).Value = x.EventName;
         }
+
         for (var i = 0; i < result.BlockedRecords.Count; i++)
         {
             var x = result.BlockedRecords[i]; var row = i + 2;
-            blocked.Cell(row, 1).Value = x.CustomerCode; blocked.Cell(row, 2).Value = x.CompanyName; blocked.Cell(row, 3).Value = x.CustomerEmail;
-            blocked.Cell(row, 4).Value = x.CustomerContactNumber1; blocked.Cell(row, 5).Value = x.BlockedBy; blocked.Cell(row, 6).Value = x.BlockReason;
-            blocked.Cell(row, 7).Value = x.CreatedBy; blocked.Cell(row, 8).Value = x.EventName;
+            blocked.Cell(row, 1).Value = x.CustomerCode; blocked.Cell(row, 2).Value = x.CompanyName; blocked.Cell(row, 3).Value = x.ContactPerson;
+            blocked.Cell(row, 4).Value = x.CustomerEmail; blocked.Cell(row, 5).Value = x.CustomerContactNumber1; blocked.Cell(row, 6).Value = x.CustomerContactNumber2;
+            blocked.Cell(row, 7).Value = x.CustomerContactNumber3; blocked.Cell(row, 8).Value = x.CountryCode; blocked.Cell(row, 9).Value = x.Country;
+            blocked.Cell(row, 10).Value = x.State; blocked.Cell(row, 11).Value = x.City; blocked.Cell(row, 12).Value = x.Category;
+            blocked.Cell(row, 13).Value = x.BlockedBy; blocked.Cell(row, 14).Value = x.BlockReason; blocked.Cell(row, 15).Value = x.CreatedBy;
+            blocked.Cell(row, 16).Value = x.CreatedOn; blocked.Cell(row, 17).Value = x.Released; blocked.Cell(row, 18).Value = x.ReleasedBy;
+            blocked.Cell(row, 19).Value = x.ReleasedOn; blocked.Cell(row, 20).Value = x.EventName;
         }
+
         for (var i = 0; i < result.InvalidRecords.Count; i++)
         {
             var x = result.InvalidRecords[i]; var row = i + 2;
             invalid.Cell(row, 1).Value = x.ExcelRow; invalid.Cell(row, 2).Value = x.CompanyName; invalid.Cell(row, 3).Value = x.CustomerEmail;
             invalid.Cell(row, 4).Value = x.CustomerNumber; invalid.Cell(row, 5).Value = x.ErrorMessage;
         }
-        clean.Columns().AdjustToContents(1, 50); blocked.Columns().AdjustToContents(1, 50); invalid.Columns().AdjustToContents(1, 50);
+
+        clean.Column(14).Style.DateFormat.Format = "yyyy-MM-dd HH:mm";
+        blocked.Column(16).Style.DateFormat.Format = "yyyy-MM-dd HH:mm";
+        foreach (var column in new[] { 1, 5, 6, 7, 8 }) clean.Column(column).Style.NumberFormat.Format = "@";
+        foreach (var column in new[] { 1, 5, 6, 7, 8 }) blocked.Column(column).Style.NumberFormat.Format = "@";
+        invalid.Column(4).Style.NumberFormat.Format = "@";
+
+        FormatResultSheet(clean, cleanHeaders.Length, result.CleanRecords.Count + 1, XLColor.Green);
+        FormatResultSheet(blocked, blockedHeaders.Length, result.BlockedRecords.Count + 1, XLColor.Orange);
+        FormatResultSheet(invalid, 5, result.InvalidRecords.Count + 1, XLColor.Red);
+        invalid.Column(5).Style.Alignment.WrapText = true;
+        invalid.Column(5).Width = 60;
+
         using var output = new MemoryStream(); workbook.SaveAs(output); return output.ToArray();
     }
 
@@ -254,16 +293,40 @@ public sealed class SalesService(AppDbContext db) : ISalesService
     {
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add(mode == SalesImportMode.Event ? "EventTemplate" : "SalesTemplate");
-        string[] headers = ["Company Name", "Contact Person", "Contact No1", "Email", "Country Code", "Country", "Contact No2", "Contact No3", "State", "City", "Category"];
-        string[] example = ["Ennoble IP", "Rajnish Sir", "123456789", "contact@ennobleip.com", "+91", "INDIA", "9876543210", "", "DELHI", "NEW DELHI", "CORPORATE"];
-        for (var col = 1; col <= headers.Length; col++) { sheet.Cell(1, col).Value = headers[col - 1]; sheet.Cell(2, col).Value = example[col - 1]; }
-        var required = new[] { 1, 2, 5, 6, 11 };
-        foreach (var col in required) { sheet.Cell(1, col).Style.Font.FontColor = XLColor.Red; sheet.Cell(1, col).Style.Fill.BackgroundColor = XLColor.LightYellow; }
-        var header = sheet.Range(1, 1, 1, headers.Length); header.Style.Font.Bold = true; header.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
-        header.Style.Border.OutsideBorder = XLBorderStyleValues.Thin; header.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
-        sheet.Range(2, 1, 2, headers.Length).Style.Fill.BackgroundColor = XLColor.LightCyan;
-        sheet.Cell(3, 1).Value = "Delete the example row before upload. Email or Contact No1 is required.";
-        sheet.Range(3, 1, 3, headers.Length).Merge(); sheet.SheetView.FreezeRows(1); sheet.Columns().AdjustToContents(10, 50);
+        string[] headers = mode == SalesImportMode.Event
+            ? ["*CompanyName", "ContactPerson", "ContactNo1", "Email", "*CountryCode", "*Country", "ContactNo2", "ContactNo3", "State", "City", "*Category"]
+            : ["*CompanyName", "ContactPerson", "ContactNo1", "Email", "CountryCode", "Country", "ContactNo2", "ContactNo3", "State", "City", "*Category"];
+        string[] example = ["Ennoble Ip", "Rajnish Sir", "123456789", "ennobleip@gmail.com", "+91", "INDIA", "9876543210", "9876543210", "DELHI", "NEW DELHI", "CORPORATE"];
+
+        for (var col = 1; col <= headers.Length; col++)
+        {
+            sheet.Cell(1, col).Value = headers[col - 1];
+            sheet.Cell(2, col).Value = example[col - 1];
+        }
+
+        var headerRow = sheet.Range("A1:K1");
+        headerRow.Style.Font.Bold = true;
+        headerRow.Style.Font.FontColor = XLColor.White;
+        headerRow.Style.Fill.BackgroundColor = XLColor.DarkBlue;
+        headerRow.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+        headerRow.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+        headerRow.Style.Border.OutsideBorder = XLBorderStyleValues.Medium;
+        headerRow.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+
+        var exampleRow = sheet.Range("A2:K2");
+        exampleRow.Style.Font.FontColor = XLColor.Black;
+        exampleRow.Style.Fill.BackgroundColor = XLColor.LightYellow;
+        exampleRow.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+        exampleRow.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+        exampleRow.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+        exampleRow.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+
+        // Preserve country codes and contact numbers exactly as entered in Excel.
+        foreach (var column in new[] { 3, 5, 7, 8 })
+            sheet.Column(column).Style.NumberFormat.Format = "@";
+
+        sheet.SheetView.FreezeRows(1);
+        sheet.Columns().AdjustToContents();
         using var output = new MemoryStream(); workbook.SaveAs(output); return output.ToArray();
     }
 
@@ -354,15 +417,18 @@ public sealed class SalesService(AppDbContext db) : ISalesService
 
     private static void Validate(ParsedLead lead, SalesImportMode mode)
     {
-        if (lead.CompanyName.Length == 0 || lead.Category.Length == 0) throw new SalesValidationException("Company name and category are required.");
-        if (mode == SalesImportMode.Standard) return;
+        if (!ValidCategories.Contains(lead.Category)) throw new SalesValidationException(CategoryNotFoundMessage);
+        if (mode == SalesImportMode.Standard)
+        {
+            if (lead.CompanyName.Length == 0) throw new SalesValidationException("Company name is required.");
+            return;
+        }
 
-        if (mode == SalesImportMode.Event && !ValidCategories.Contains(lead.Category)) throw new SalesValidationException("Invalid category.");
         if (mode == SalesImportMode.Event && lead.EventName is null) throw new SalesValidationException("Event name is required for event sales.");
-        if (mode == SalesImportMode.Event && (lead.CountryCode is null || lead.Country is null)) throw new SalesValidationException("Country code and country are required.");
-        if (lead.Email.Length == 0 && lead.Phone1 is null) throw new SalesValidationException("Email or contact number is required.");
+        if (mode == SalesImportMode.Event && (lead.CompanyName.Length == 0 || lead.CountryCode is null || lead.Country is null)) throw new SalesValidationException("Missing mandatory fields: CompanyName, CountryCode and Country.");
+        if (lead.Email.Length == 0 && lead.Phone1 is null) throw new SalesValidationException("Email or contact number required.");
         if (lead.Email.Length > 0 && !IsValidEmail(lead.Email)) throw new SalesValidationException("Invalid email.");
-        if (lead.Phone1 is not null && !lead.Phone1.All(char.IsDigit)) throw new SalesValidationException("Contact number can contain digits only.");
+        if (lead.Phone1 is not null && !lead.Phone1.All(char.IsDigit)) throw new SalesValidationException("Invalid contact number.");
     }
 
     private static ParsedLead ParseRow(IXLWorksheet sheet, int row, string actor, string? eventName) => Normalize(new SalesLeadRequest(
@@ -373,7 +439,7 @@ public sealed class SalesService(AppDbContext db) : ISalesService
     private static ParsedLead Normalize(SalesLeadRequest x)
     {
         var email = x.CustomerEmail?.Trim().ToLowerInvariant() ?? "";
-        return new ParsedLead(x.CompanyName.Trim().ToUpperInvariant(), x.ContactPerson.Trim().ToUpperInvariant(), Empty(x.CustomerContactNumber1), email,
+        return new ParsedLead(x.CompanyName.Trim().ToUpperInvariant(), x.ContactPerson?.Trim().ToUpperInvariant() ?? "", Empty(x.CustomerContactNumber1), email,
             DomainOf(email, null), Empty(x.CountryCode), Empty(x.Country)?.ToUpperInvariant(), Empty(x.CustomerContactNumber2), Empty(x.CustomerContactNumber3),
             Empty(x.State)?.ToUpperInvariant(), Empty(x.City)?.ToUpperInvariant(), x.Category.Trim().ToUpperInvariant(), x.Actor.Trim(), Empty(x.EventName));
     }
@@ -388,6 +454,33 @@ public sealed class SalesService(AppDbContext db) : ISalesService
     private static bool Eq(string? a, string? b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
     private static bool IsValidEmail(string email) { try { var x = new MailAddress(email); return x.Address == email && x.Host.Contains('.'); } catch { return false; } }
     private static void WriteHeaders(IXLWorksheet sheet, string[] headers) { for (var i = 0; i < headers.Length; i++) sheet.Cell(1, i + 1).Value = headers[i]; var range = sheet.Range(1, 1, 1, headers.Length); range.Style.Font.Bold = true; range.Style.Font.FontColor = XLColor.White; range.Style.Fill.BackgroundColor = XLColor.BlueGray; sheet.SheetView.FreezeRows(1); }
+    private static void FormatResultSheet(IXLWorksheet sheet, int lastColumn, int lastRow, XLColor tabColor)
+    {
+        var header = sheet.Range(1, 1, 1, lastColumn);
+        header.Style.Font.Bold = true;
+        header.Style.Font.FontColor = XLColor.White;
+        header.Style.Fill.BackgroundColor = XLColor.DarkBlue;
+        header.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+        header.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+        header.Style.Border.OutsideBorder = XLBorderStyleValues.Medium;
+        header.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+
+        if (lastRow > 1)
+        {
+            var data = sheet.Range(2, 1, lastRow, lastColumn);
+            data.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+            data.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+            data.Style.Border.InsideBorder = XLBorderStyleValues.Hair;
+            data.Style.Border.InsideBorderColor = XLColor.LightGray;
+        }
+
+        sheet.Range(1, 1, Math.Max(1, lastRow), lastColumn).SetAutoFilter();
+        sheet.SheetView.FreezeRows(1);
+        sheet.TabColor = tabColor;
+        sheet.Columns(1, lastColumn).AdjustToContents(1, Math.Max(1, lastRow));
+        foreach (var column in sheet.Columns(1, lastColumn))
+            column.Width = Math.Min(column.Width + 2, 45);
+    }
     private static string CsvLine(params object?[] values) => string.Join(',', values.Select(x => Csv(x?.ToString())));
     private static string Csv(string? value) { if (string.IsNullOrEmpty(value)) return ""; var x = value.Replace("\"", "\"\""); return x.IndexOfAny([',', '\"', '\r', '\n']) >= 0 ? $"\"{x}\"" : x; }
 

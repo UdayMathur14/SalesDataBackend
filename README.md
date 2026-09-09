@@ -38,8 +38,10 @@ For corporate/non-individual customers, email or company duplication is rejected
 - `PUT /api/sales/clean/{id}` - update a clean lead
 - `DELETE /api/sales/{recordType}/{id}` - delete a clean or blocked lead
 - `POST /api/sales/import` - optimized bulk Excel import; supports `Standard` and `Event` modes
+- `POST /api/sales/import/export-results` - upload Excel and directly download the Clean/Blocked/Invalid result workbook
 - `GET /api/sales/export?format=Xlsx` - filtered Excel or CSV export
-- `POST /api/sales/import-results/export` - export one upload result into Clean, Blocked and Invalid sheets
+- `POST /api/sales/import-results/export` - send the JSON returned by import and download its Clean/Blocked/Invalid result workbook
+- `GET /api/sales/template` - direct normal Sales upload template download
 - `GET /api/sales/templates/Standard` - normal upload template
 - `GET /api/sales/templates/Event` - event upload template
 - `GET /api/sales/verify-company?companyName=...` - check Sales and Customer Master

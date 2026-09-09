@@ -72,12 +72,36 @@ public sealed class SalesController(ISalesService service) : ControllerBase
     public IActionResult ExportImportResults(SalesImportResult result) => File(service.BuildImportResultWorkbook(result),
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "MailingUploadResults.xlsx");
 
+    [HttpPost("import/export-results")]
+    [Consumes("multipart/form-data")]
+    [Produces("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")]
+    [RequestSizeLimit(25 * 1024 * 1024)]
+    public async Task<IActionResult> ImportAndExportResults([FromForm] SalesImportForm form, CancellationToken ct)
+    {
+        if (form.File.Length == 0) return BadRequest("Excel file is empty.");
+        try
+        {
+            await using var stream = form.File.OpenReadStream();
+            var result = await service.ImportAsync(stream, form.Mode, form.Actor, form.EventName, ct);
+            return File(service.BuildImportResultWorkbook(result),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "MailingUploadResults.xlsx");
+        }
+        catch (SalesValidationException ex) { return ValidationProblem(ex.Message); }
+        catch (InvalidDataException) { return BadRequest("Invalid or corrupted Excel file."); }
+    }
+
     [HttpGet("templates/{mode}")]
     public IActionResult DownloadTemplate(SalesImportMode mode)
     {
         var name = mode == SalesImportMode.Event ? "EventTemplate.xlsx" : "SalesTemplate.xlsx";
         return File(service.BuildTemplate(mode), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", name);
     }
+
+    [HttpGet("template")]
+    public IActionResult DownloadSalesTemplate() => File(
+        service.BuildTemplate(SalesImportMode.Standard),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "SalesTemplate.xlsx");
 
     [HttpGet("verify-company")]
     public async Task<IActionResult> VerifyCompany([Required] string companyName, CancellationToken ct)

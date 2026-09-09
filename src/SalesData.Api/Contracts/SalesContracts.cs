@@ -8,7 +8,7 @@ public enum SalesExportFormat { Xlsx, Csv }
 
 public sealed record SalesLeadRequest(
     [Required, MaxLength(250)] string CompanyName,
-    [Required, MaxLength(200)] string ContactPerson,
+    [MaxLength(200)] string? ContactPerson,
     [MaxLength(30)] string? CustomerContactNumber1,
     [MaxLength(320)] string? CustomerEmail,
     [MaxLength(10)] string? CountryCode,
